@@ -23,6 +23,8 @@ softmmu_ss.add(when: 'CONFIG_VIRTIO_SERIAL', if_true: files('virtio-console.c'))
 softmmu_ss.add(when: 'CONFIG_XEN', if_true: files('xen_console.c'))
 softmmu_ss.add(when: 'CONFIG_XILINX', if_true: files('xilinx_uartlite.c'))
 
+softmmu_ss.add(when: 'CONFIG_SERIAL', if_true: files('rivos_viewer_serial.c'))
+
 softmmu_ss.add(when: 'CONFIG_AVR_USART', if_true: files('avr_usart.c'))
 softmmu_ss.add(when: 'CONFIG_COLDFIRE', if_true: files('mcf_uart.c'))
 softmmu_ss.add(when: 'CONFIG_DIGIC', if_true: files('digic-uart.c'))
