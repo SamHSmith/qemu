@@ -32,11 +32,21 @@
 #include "chardev/char.h"
 #include "hw/sysbus.h"
 #include "qom/object.h"
+#include "ui/console.h"
 
 #define UART_FIFO_LENGTH    16      /* 16550A Fifo Length */
 
 struct ViewerState {
     DeviceState parent;
+
+    QemuConsole* con;
+    uint8_t* framebuffer;
+    uint64_t framebuffer_index;
+    uint64_t framebuffer_size;
+    DisplaySurface* surface;
+
+    uint8_t send_buffer[4096];
+    uint64_t send_count;
 
     uint16_t divider;
     uint8_t rbr; /* receive register */

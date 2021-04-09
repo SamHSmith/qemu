@@ -25,6 +25,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/char/rivos_viewer_serial.h"
+#include "ui/console.h"
 #include "hw/irq.h"
 #include "migration/vmstate.h"
 #include "chardev/char-serial.h"
@@ -331,7 +332,22 @@ static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
     ViewerState *s = opaque;
-printf("super fancy uart write\n");
+    ViewerState* viewer = s;
+//    printf("super fancy uart write\n");
+
+    for(uint64_t i = 0; (i < 8) && (viewer->framebuffer_index < viewer->framebuffer_size); i++)
+    {
+        viewer->framebuffer[viewer->framebuffer_index] = 255* ((val & (1 << i)) > 0);
+        viewer->framebuffer_index++;
+        viewer->framebuffer[viewer->framebuffer_index] = 255* ((val & (1 << i)) > 0);
+        viewer->framebuffer_index++;
+        viewer->framebuffer[viewer->framebuffer_index] = 255* ((val & (1 << i)) > 0);
+        viewer->framebuffer_index++;
+    }
+
+    return;
+
+
     assert(size == 1 && addr < 8);
     trace_serial_write(addr, val);
     switch(addr) {
@@ -471,10 +487,26 @@ printf("super fancy uart write\n");
 static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
 {
     ViewerState *s = opaque;
+    ViewerState* viewer = s;
     uint32_t ret;
 
-printf("super fancy uart read\n");
-return 42;
+    if(addr == 1)
+    {
+        return viewer->send_count > 0;
+    }
+    else if(addr == 0)
+    {
+        uint8_t ret = 0;
+        if(viewer->send_count > 0) { viewer->send_count -= 1; }
+        for(int64_t i = viewer->send_count; i >= 0; i--)
+        {
+            uint8_t temp = viewer->send_buffer[i];
+            viewer->send_buffer[i] = ret;
+            ret = temp;
+        }
+        return ret;
+    }
+    return 0;
 
 
     assert(size == 1 && addr < 8);
@@ -485,7 +517,6 @@ return 42;
             ret = s->divider & 0xff;
         } else {
             if(s->fcr & UART_FCR_FE) {
-printf("super fancy uart read\n");
                 ret = fifo8_is_empty(&s->recv_fifo) ?
                             0 : fifo8_pop(&s->recv_fifo);
                 if (s->recv_fifo.num == 0) {
@@ -557,6 +588,41 @@ printf("super fancy uart read\n");
     }
     trace_serial_read(addr, ret);
     return ret;
+}
+
+static void viewer_display_update(void* dev)
+{
+    ViewerState* viewer = VIEWER(dev);
+
+    if(!viewer->framebuffer || viewer->framebuffer_index >= viewer->framebuffer_size)
+    {
+        if(viewer->framebuffer)
+        {
+            dpy_gfx_replace_surface(viewer->con, viewer->surface);
+            dpy_gfx_update_full(viewer->con);
+        }
+        int width = qemu_console_get_width(viewer->con, 1280);
+        int height = qemu_console_get_height(viewer->con, 1024);
+        uint8_t* framebuffer = g_malloc(width*height*3);
+        DisplaySurface* surface =
+            qemu_create_displaysurface_from(width, height, PIXMAN_r8g8b8, width * 3, framebuffer);
+
+        viewer->framebuffer = framebuffer;
+        viewer->framebuffer_index = 0;
+        viewer->framebuffer_size = width*height*3;
+        viewer->surface = surface;
+
+        if(viewer->send_count + 1 + 4*2 < 4096)
+        {
+            viewer->send_buffer[viewer->send_count] = 1;
+            viewer->send_count += 1;
+            uint32_t* b = (uint32_t*)(viewer->send_buffer + viewer->send_count);
+            viewer->send_count += 4*2;
+            *b = (uint32_t)width;
+            b++;
+            *b = (uint32_t)height;
+        }
+    }
 }
 
 static int viewer_can_receive(ViewerState *s)
@@ -926,9 +992,19 @@ static int viewer_be_change(void *opaque)
     return 0;
 }
 
+static const GraphicHwOps wrapper_ops = {
+    .gfx_update = viewer_display_update,
+};
+
 static void viewer_realize(DeviceState *dev, Error **errp)
 {
     ViewerState *s = VIEWER(dev);
+
+    s->con = graphic_console_init(dev, 0, &wrapper_ops, dev);
+    s->framebuffer = 0;
+    s->framebuffer_size = 0;
+    s->surface = 0;
+    s->send_count = 0;
 
     s->modem_status_poll = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) viewer_update_msl, s);
 
