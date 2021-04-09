@@ -481,7 +481,6 @@ static uint64_t serial_ioport_read(void *opaque, hwaddr addr, unsigned size)
             ret = s->divider & 0xff;
         } else {
             if(s->fcr & UART_FCR_FE) {
-printf("uart read\n");
                 ret = fifo8_is_empty(&s->recv_fifo) ?
                             0 : fifo8_pop(&s->recv_fifo);
                 if (s->recv_fifo.num == 0) {

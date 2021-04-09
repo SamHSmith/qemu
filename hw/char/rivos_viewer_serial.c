@@ -331,7 +331,7 @@ static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
     ViewerState *s = opaque;
-
+printf("super fancy uart write\n");
     assert(size == 1 && addr < 8);
     trace_serial_write(addr, val);
     switch(addr) {
@@ -472,6 +472,10 @@ static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
 {
     ViewerState *s = opaque;
     uint32_t ret;
+
+printf("super fancy uart read\n");
+return 42;
+
 
     assert(size == 1 && addr < 8);
     switch(addr) {
