@@ -26,6 +26,8 @@
 #include "qemu/osdep.h"
 #include "hw/char/rivos_viewer_serial.h"
 #include "ui/console.h"
+#include "sysemu/dma.h"
+#include "exec/address-spaces.h"
 #include "hw/irq.h"
 #include "migration/vmstate.h"
 #include "chardev/char-serial.h"
@@ -335,14 +337,28 @@ static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
     ViewerState* viewer = s;
 //    printf("super fancy uart write\n");
 
-    for(uint64_t i = 0; (i < 8) && (viewer->framebuffer_index < viewer->framebuffer_size); i++)
+    *(((uint8_t*)viewer->recieve_data) + viewer->recieve_count) = (uint8_t)val;
+    viewer->recieve_count += 1;
+
+    if(viewer->recieve_count >= 8*2)
     {
-        viewer->framebuffer[viewer->framebuffer_index] = 255* ((val & (1 << i)) > 0);
-        viewer->framebuffer_index++;
-        viewer->framebuffer[viewer->framebuffer_index] = 255* ((val & (1 << i)) > 0);
-        viewer->framebuffer_index++;
-        viewer->framebuffer[viewer->framebuffer_index] = 255* ((val & (1 << i)) > 0);
-        viewer->framebuffer_index++;
+        uint64_t data_count = viewer->recieve_data[0];
+        uint64_t data_ptr = viewer->recieve_data[1];
+        viewer->recieve_count = 0;
+
+        float* buf = g_malloc(data_count);
+
+        dma_memory_read(&address_space_memory, data_ptr,
+                        buf,
+                        data_count);
+        for(uint64_t i = 0; i < viewer->framebuffer_size/3; i++)
+        {
+            *(viewer->framebuffer + i*3 + 0) = (uint8_t)(buf[i*4 + 0] * 255.0);
+            *(viewer->framebuffer + i*3 + 1) = (uint8_t)(buf[i*4 + 1] * 255.0);
+            *(viewer->framebuffer + i*3 + 2) = (uint8_t)(buf[i*4 + 2] * 255.0);
+        }
+        viewer->framebuffer_index = viewer->framebuffer_size;
+        g_free(buf);
     }
 
     return;
@@ -593,11 +609,15 @@ static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
 static void viewer_display_update(void* dev)
 {
     ViewerState* viewer = VIEWER(dev);
-
     if(!viewer->framebuffer || viewer->framebuffer_index >= viewer->framebuffer_size)
     {
         if(viewer->framebuffer)
         {
+            if(viewer->old_framebuffer)
+            {
+                g_free(viewer->old_framebuffer);
+            }
+            viewer->old_framebuffer = viewer->framebuffer;
             dpy_gfx_replace_surface(viewer->con, viewer->surface);
             dpy_gfx_update_full(viewer->con);
         }
@@ -622,6 +642,10 @@ static void viewer_display_update(void* dev)
             b++;
             *b = (uint32_t)height;
         }
+    }
+    else
+    {
+        printf("Frame dropped\n");
     }
 }
 
@@ -1002,9 +1026,11 @@ static void viewer_realize(DeviceState *dev, Error **errp)
 
     s->con = graphic_console_init(dev, 0, &wrapper_ops, dev);
     s->framebuffer = 0;
+    s->old_framebuffer = 0;
     s->framebuffer_size = 0;
     s->surface = 0;
     s->send_count = 0;
+    s->recieve_count = 0;
 
     s->modem_status_poll = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) viewer_update_msl, s);
 

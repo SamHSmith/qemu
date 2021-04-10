@@ -41,9 +41,13 @@ struct ViewerState {
 
     QemuConsole* con;
     uint8_t* framebuffer;
+    uint8_t* old_framebuffer;
     uint64_t framebuffer_index;
     uint64_t framebuffer_size;
     DisplaySurface* surface;
+
+    uint64_t recieve_data[2];
+    uint64_t recieve_count;
 
     uint8_t send_buffer[4096];
     uint64_t send_count;
