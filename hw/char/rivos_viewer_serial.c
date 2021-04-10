@@ -346,7 +346,7 @@ static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
         uint64_t data_ptr = viewer->recieve_data[1];
         viewer->recieve_count = 0;
 
-        float* buf = g_malloc(data_count);
+        float* buf = viewer->fb;
 
         dma_memory_read(&address_space_memory, data_ptr,
                         buf,
@@ -358,145 +358,6 @@ static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
             *(viewer->framebuffer + i*3 + 2) = (uint8_t)(buf[i*4 + 2] * 255.0);
         }
         viewer->framebuffer_index = viewer->framebuffer_size;
-        g_free(buf);
-    }
-
-    return;
-
-
-    assert(size == 1 && addr < 8);
-    trace_serial_write(addr, val);
-    switch(addr) {
-    default:
-    case 0:
-        if (s->lcr & UART_LCR_DLAB) {
-            if (size == 1) {
-                s->divider = (s->divider & 0xff00) | val;
-            } else {
-                s->divider = val;
-            }
-            viewer_update_parameters(s);
-        } else {
-            s->thr = (uint8_t) val;
-            if(s->fcr & UART_FCR_FE) {
-                /* xmit overruns overwrite data, so make space if needed */
-                if (fifo8_is_full(&s->xmit_fifo)) {
-                    fifo8_pop(&s->xmit_fifo);
-                }
-                fifo8_push(&s->xmit_fifo, s->thr);
-            }
-            s->thr_ipending = 0;
-            s->lsr &= ~UART_LSR_THRE;
-            s->lsr &= ~UART_LSR_TEMT;
-            viewer_update_irq(s);
-            if (s->tsr_retry == 0) {
-                viewer_xmit(s);
-            }
-        }
-        break;
-    case 1:
-        if (s->lcr & UART_LCR_DLAB) {
-            s->divider = (s->divider & 0x00ff) | (val << 8);
-            viewer_update_parameters(s);
-        } else {
-            uint8_t changed = (s->ier ^ val) & 0x0f;
-            s->ier = val & 0x0f;
-            /* If the backend device is a real viewer port, turn polling of the modem
-             * status lines on physical port on or off depending on UART_IER_MSI state.
-             */
-            if ((changed & UART_IER_MSI) && s->poll_msl >= 0) {
-                if (s->ier & UART_IER_MSI) {
-                     s->poll_msl = 1;
-                     viewer_update_msl(s);
-                } else {
-                     timer_del(s->modem_status_poll);
-                     s->poll_msl = 0;
-                }
-            }
-
-            /* Turning on the THRE interrupt on IER can trigger the interrupt
-             * if LSR.THRE=1, even if it had been masked before by reading IIR.
-             * This is not in the datasheet, but Windows relies on it.  It is
-             * unclear if THRE has to be resampled every time THRI becomes
-             * 1, or only on the rising edge.  Bochs does the latter, and Windows
-             * always toggles IER to all zeroes and back to all ones, so do the
-             * same.
-             *
-             * If IER.THRI is zero, thr_ipending is not used.  Set it to zero
-             * so that the thr_ipending subsection is not migrated.
-             */
-            if (changed & UART_IER_THRI) {
-                if ((s->ier & UART_IER_THRI) && (s->lsr & UART_LSR_THRE)) {
-                    s->thr_ipending = 1;
-                } else {
-                    s->thr_ipending = 0;
-                }
-            }
-
-            if (changed) {
-                viewer_update_irq(s);
-            }
-        }
-        break;
-    case 2:
-        /* Did the enable/disable flag change? If so, make sure FIFOs get flushed */
-        if ((val ^ s->fcr) & UART_FCR_FE) {
-            val |= UART_FCR_XFR | UART_FCR_RFR;
-        }
-
-        /* FIFO clear */
-
-        if (val & UART_FCR_RFR) {
-            s->lsr &= ~(UART_LSR_DR | UART_LSR_BI);
-            timer_del(s->fifo_timeout_timer);
-            s->timeout_ipending = 0;
-            fifo8_reset(&s->recv_fifo);
-        }
-
-        if (val & UART_FCR_XFR) {
-            s->lsr |= UART_LSR_THRE;
-            s->thr_ipending = 1;
-            fifo8_reset(&s->xmit_fifo);
-        }
-
-        viewer_write_fcr(s, val & 0xC9);
-        viewer_update_irq(s);
-        break;
-    case 3:
-        {
-            int break_enable;
-            s->lcr = val;
-            viewer_update_parameters(s);
-            break_enable = (val >> 6) & 1;
-            if (break_enable != s->last_break_enable) {
-                s->last_break_enable = break_enable;
-                qemu_chr_fe_ioctl(&s->chr, CHR_IOCTL_SERIAL_SET_BREAK,
-                                  &break_enable);
-            }
-        }
-        break;
-    case 4:
-        {
-            int old_mcr = s->mcr;
-            s->mcr = val & 0x1f;
-            if (val & UART_MCR_LOOP)
-                break;
-
-            if (s->poll_msl >= 0 && old_mcr != s->mcr) {
-                viewer_update_tiocm(s);
-                /* Update the modem status after a one-character-send wait-time, since there may be a response
-                   from the device/computer at the other end of the viewer line */
-                timer_mod(s->modem_status_poll, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->char_transmit_time);
-            }
-        }
-        break;
-    case 5:
-        break;
-    case 6:
-        break;
-    case 7:
-        s->scr = val;
-        break;
     }
 }
 
@@ -605,32 +466,35 @@ static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
     trace_serial_read(addr, ret);
     return ret;
 }
-
+static uint8_t first_run = 1;
+#define WIDTH (1280)
+#define HEIGHT (1024)
 static void viewer_display_update(void* dev)
 {
     ViewerState* viewer = VIEWER(dev);
-    if(!viewer->framebuffer || viewer->framebuffer_index >= viewer->framebuffer_size)
+    if(first_run || viewer->framebuffer_index >= viewer->framebuffer_size)
     {
-        if(viewer->framebuffer)
+        int width = WIDTH;
+        int height = HEIGHT;
+        if(first_run)
         {
-            if(viewer->old_framebuffer)
-            {
-                g_free(viewer->old_framebuffer);
-            }
-            viewer->old_framebuffer = viewer->framebuffer;
-            dpy_gfx_replace_surface(viewer->con, viewer->surface);
-            dpy_gfx_update_full(viewer->con);
+            first_run = 0;
+            viewer->framebuffer = g_malloc(width*height*3);
+            viewer->old_framebuffer = g_malloc(width*height*3);
+            viewer->framebuffer_size = width*height*3;
         }
-        int width = qemu_console_get_width(viewer->con, 1280);
-        int height = qemu_console_get_height(viewer->con, 1024);
-        uint8_t* framebuffer = g_malloc(width*height*3);
-        DisplaySurface* surface =
-            qemu_create_displaysurface_from(width, height, PIXMAN_r8g8b8, width * 3, framebuffer);
 
-        viewer->framebuffer = framebuffer;
+        uint8_t* tempbuf = viewer->framebuffer;
+        viewer->framebuffer = viewer->old_framebuffer;
+        viewer->old_framebuffer = tempbuf;
+
+        DisplaySurface* tempsurf =
+    qemu_create_displaysurface_from(width, height, PIXMAN_r8g8b8, width * 3, viewer->framebuffer);
+
+        dpy_gfx_replace_surface(viewer->con, tempsurf);
+        dpy_gfx_update_full(viewer->con);
+
         viewer->framebuffer_index = 0;
-        viewer->framebuffer_size = width*height*3;
-        viewer->surface = surface;
 
         if(viewer->send_count + 1 + 4*2 < 4096)
         {
@@ -642,10 +506,6 @@ static void viewer_display_update(void* dev)
             b++;
             *b = (uint32_t)height;
         }
-    }
-    else
-    {
-        printf("Frame dropped\n");
     }
 }
 
@@ -1025,12 +885,9 @@ static void viewer_realize(DeviceState *dev, Error **errp)
     ViewerState *s = VIEWER(dev);
 
     s->con = graphic_console_init(dev, 0, &wrapper_ops, dev);
-    s->framebuffer = 0;
-    s->old_framebuffer = 0;
-    s->framebuffer_size = 0;
-    s->surface = 0;
     s->send_count = 0;
     s->recieve_count = 0;
+    s->fb = g_malloc(WIDTH*HEIGHT*4*4);
 
     s->modem_status_poll = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) viewer_update_msl, s);
 

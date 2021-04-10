@@ -44,7 +44,7 @@ struct ViewerState {
     uint8_t* old_framebuffer;
     uint64_t framebuffer_index;
     uint64_t framebuffer_size;
-    DisplaySurface* surface;
+    float* fb;
 
     uint64_t recieve_data[2];
     uint64_t recieve_count;
