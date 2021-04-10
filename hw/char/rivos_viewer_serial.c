@@ -467,8 +467,8 @@ static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
     return ret;
 }
 static uint8_t first_run = 1;
-#define WIDTH (1280)
-#define HEIGHT (1024)
+#define WIDTH (1280/2)
+#define HEIGHT (1024/2)
 static void viewer_display_update(void* dev)
 {
     ViewerState* viewer = VIEWER(dev);
