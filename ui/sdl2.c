@@ -95,8 +95,7 @@ void sdl2_window_create(struct sdl2_console *scon)
                                          surface_width(scon->surface),
                                          surface_height(scon->surface),
                                          flags);
-    scon->real_renderer = SDL_CreateRenderer(scon->real_window, -1,
-                            SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    scon->real_renderer = SDL_CreateRenderer(scon->real_window, -1, 0);
     if (scon->opengl) {
         scon->winctx = SDL_GL_GetCurrentContext();
     }

@@ -393,13 +393,8 @@ static uint8_t first_run = 1;
 #define WIDTH (1280/2)
 #define HEIGHT (1024/2)
 
-#include <time.h>
-static clock_t last_time = 0;
 static void viewer_display_update(void* dev)
 {
-    clock_t time = clock();
-    printf("delta %lf\n", (double)(time - last_time) / (double)CLOCKS_PER_SEC);
-    last_time = time;
     int width = WIDTH;
     int height = HEIGHT;
     ViewerState* viewer = VIEWER(dev);
