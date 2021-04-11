@@ -27,7 +27,9 @@
 #include "hw/char/rivos_viewer_serial.h"
 #include "ui/console.h"
 #include "sysemu/dma.h"
+#include "ui/input.h"
 #include "exec/address-spaces.h"
+#include "qemu/module.h"
 #include "hw/irq.h"
 #include "migration/vmstate.h"
 #include "chardev/char-serial.h"
@@ -330,11 +332,14 @@ static void viewer_update_tiocm(ViewerState *s)
     qemu_chr_fe_ioctl(&s->chr, CHR_IOCTL_SERIAL_SET_TIOCM, &flags);
 }
 
+////////////////////////////////////////////////////////////////////////
+//----------------------  START OF GOOD STUFF  -------------------------
+////////////////////////////////////////////////////////////////////////
+
 static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
-    ViewerState *s = opaque;
-    ViewerState* viewer = s;
+    ViewerState* viewer = opaque;
 //    printf("super fancy uart write\n");
 
     *(((uint8_t*)viewer->recieve_data) + viewer->recieve_count) = (uint8_t)val;
@@ -351,11 +356,12 @@ static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
         dma_memory_read(&address_space_memory, data_ptr,
                         buf,
                         data_count);
-        for(uint64_t i = 0; i < viewer->framebuffer_size/3; i++)
+        for(uint64_t i = 0; i < viewer->framebuffer_size/4; i++)
         {
-            *(viewer->framebuffer + i*3 + 0) = (uint8_t)(buf[i*4 + 0] * 255.0);
-            *(viewer->framebuffer + i*3 + 1) = (uint8_t)(buf[i*4 + 1] * 255.0);
-            *(viewer->framebuffer + i*3 + 2) = (uint8_t)(buf[i*4 + 2] * 255.0);
+            *(viewer->framebuffer + i*4 + 0) = (uint8_t)(buf[i*4 + 0] * 255.0);
+            *(viewer->framebuffer + i*4 + 1) = (uint8_t)(buf[i*4 + 1] * 255.0);
+            *(viewer->framebuffer + i*4 + 2) = (uint8_t)(buf[i*4 + 2] * 255.0);
+            *(viewer->framebuffer + i*4 + 3) = (uint8_t)255;
         }
         viewer->framebuffer_index = viewer->framebuffer_size;
     }
@@ -363,9 +369,7 @@ static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
 
 static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
 {
-    ViewerState *s = opaque;
-    ViewerState* viewer = s;
-    uint32_t ret;
+    ViewerState* viewer = opaque;
 
     if(addr == 1)
     {
@@ -384,104 +388,29 @@ static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
         return ret;
     }
     return 0;
-
-
-    assert(size == 1 && addr < 8);
-    switch(addr) {
-    default:
-    case 0:
-        if (s->lcr & UART_LCR_DLAB) {
-            ret = s->divider & 0xff;
-        } else {
-            if(s->fcr & UART_FCR_FE) {
-                ret = fifo8_is_empty(&s->recv_fifo) ?
-                            0 : fifo8_pop(&s->recv_fifo);
-                if (s->recv_fifo.num == 0) {
-                    s->lsr &= ~(UART_LSR_DR | UART_LSR_BI);
-                } else {
-                    timer_mod(s->fifo_timeout_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->char_transmit_time * 4);
-                }
-                s->timeout_ipending = 0;
-            } else {
-                ret = s->rbr;
-                s->lsr &= ~(UART_LSR_DR | UART_LSR_BI);
-            }
-            viewer_update_irq(s);
-            if (!(s->mcr & UART_MCR_LOOP)) {
-                /* in loopback mode, don't receive any data */
-                qemu_chr_fe_accept_input(&s->chr);
-            }
-        }
-        break;
-    case 1:
-        if (s->lcr & UART_LCR_DLAB) {
-            ret = (s->divider >> 8) & 0xff;
-        } else {
-            ret = s->ier;
-        }
-        break;
-    case 2:
-        ret = s->iir;
-        if ((ret & UART_IIR_ID) == UART_IIR_THRI) {
-            s->thr_ipending = 0;
-            viewer_update_irq(s);
-        }
-        break;
-    case 3:
-        ret = s->lcr;
-        break;
-    case 4:
-        ret = s->mcr;
-        break;
-    case 5:
-        ret = s->lsr;
-        /* Clear break and overrun interrupts */
-        if (s->lsr & (UART_LSR_BI|UART_LSR_OE)) {
-            s->lsr &= ~(UART_LSR_BI|UART_LSR_OE);
-            viewer_update_irq(s);
-        }
-        break;
-    case 6:
-        if (s->mcr & UART_MCR_LOOP) {
-            /* in loopback, the modem output pins are connected to the
-               inputs */
-            ret = (s->mcr & 0x0c) << 4;
-            ret |= (s->mcr & 0x02) << 3;
-            ret |= (s->mcr & 0x01) << 5;
-        } else {
-            if (s->poll_msl >= 0)
-                viewer_update_msl(s);
-            ret = s->msr;
-            /* Clear delta bits & msr int after read, if they were set */
-            if (s->msr & UART_MSR_ANY_DELTA) {
-                s->msr &= 0xF0;
-                viewer_update_irq(s);
-            }
-        }
-        break;
-    case 7:
-        ret = s->scr;
-        break;
-    }
-    trace_serial_read(addr, ret);
-    return ret;
 }
 static uint8_t first_run = 1;
 #define WIDTH (1280/2)
 #define HEIGHT (1024/2)
+
+#include <time.h>
+static clock_t last_time = 0;
 static void viewer_display_update(void* dev)
 {
+    clock_t time = clock();
+    printf("delta %lf\n", (double)(time - last_time) / (double)CLOCKS_PER_SEC);
+    last_time = time;
+    int width = WIDTH;
+    int height = HEIGHT;
     ViewerState* viewer = VIEWER(dev);
     if(first_run || viewer->framebuffer_index >= viewer->framebuffer_size)
     {
-        int width = WIDTH;
-        int height = HEIGHT;
         if(first_run)
         {
             first_run = 0;
-            viewer->framebuffer = g_malloc(width*height*3);
-            viewer->old_framebuffer = g_malloc(width*height*3);
-            viewer->framebuffer_size = width*height*3;
+            viewer->framebuffer = g_malloc(width*height*4);
+            viewer->old_framebuffer = g_malloc(width*height*4);
+            viewer->framebuffer_size = width*height*4;
         }
 
         uint8_t* tempbuf = viewer->framebuffer;
@@ -489,14 +418,14 @@ static void viewer_display_update(void* dev)
         viewer->old_framebuffer = tempbuf;
 
         DisplaySurface* tempsurf =
-    qemu_create_displaysurface_from(width, height, PIXMAN_r8g8b8, width * 3, viewer->framebuffer);
+    qemu_create_displaysurface_from(width, height, PIXMAN_a8b8g8r8, width * 4, viewer->framebuffer);
 
         dpy_gfx_replace_surface(viewer->con, tempsurf);
         dpy_gfx_update_full(viewer->con);
 
         viewer->framebuffer_index = 0;
 
-        if(viewer->send_count + 1 + 4*2 < 4096)
+        if(viewer->send_count + 1 + 4*2 + 1 + 4*2 < 4096)
         {
             viewer->send_buffer[viewer->send_count] = 1;
             viewer->send_count += 1;
@@ -505,9 +434,83 @@ static void viewer_display_update(void* dev)
             *b = (uint32_t)width;
             b++;
             *b = (uint32_t)height;
+
+            viewer->send_buffer[viewer->send_count] = 2;
+            viewer->send_count += 1;
+            *((int32_t*)(viewer->send_buffer + viewer->send_count)) = viewer->mouse_x;
+            viewer->send_count += 4;
+            *((int32_t*)(viewer->send_buffer + viewer->send_count)) = viewer->mouse_y;
+            viewer->send_count += 4;
+            viewer->mouse_x = 0; viewer->mouse_y = 0;
         }
     }
 }
+
+static void msmouse_input_event(DeviceState *dev, QemuConsole *src,
+                                InputEvent *evt)
+{
+    ViewerState* viewer = VIEWER(dev);
+    InputMoveEvent* move;
+    InputBtnEvent* btn;
+    InputKeyEvent* key;
+
+    if(evt->type == INPUT_EVENT_KIND_REL)
+    {
+        move = evt->u.rel.data;
+        int32_t value = move->value;
+        if(move->axis == INPUT_AXIS_X)
+        {
+            viewer->mouse_x += value;
+        }
+        else if(move->axis == INPUT_AXIS_Y)
+        {
+            viewer->mouse_y += value;
+        }
+    }
+    else if(evt->type == INPUT_EVENT_KIND_BTN)
+    {
+        btn = evt->u.btn.data;
+        uint8_t button = btn->button;
+        uint8_t down = btn->down;
+        if(viewer->send_count + 1 + 8 + 1 + 1 < 4096)
+        {
+            viewer->send_buffer[viewer->send_count] = 2;
+            viewer->send_count += 1;
+            *((int32_t*)(viewer->send_buffer + viewer->send_count)) = viewer->mouse_x;
+            viewer->send_count += 4;
+            *((int32_t*)(viewer->send_buffer + viewer->send_count)) = viewer->mouse_y;
+            viewer->send_count += 4;
+            viewer->mouse_x = 0; viewer->mouse_y = 0;
+
+            viewer->send_buffer[viewer->send_count] = 3 + (down != 0);
+            viewer->send_count += 1;
+            viewer->send_buffer[viewer->send_count] = button;
+            viewer->send_count += 1;
+        }
+    }
+    else if(evt->type == INPUT_EVENT_KIND_KEY)
+    {
+        key = evt->u.key.data;
+        int qcode = qemu_input_key_value_to_qcode(key->key);
+        uint8_t scancode = qcode;
+        uint8_t down = key->down;
+        if(viewer->send_count + 1 + 1 < 4096)
+        {
+            viewer->send_buffer[viewer->send_count] = 5 + (down != 0);
+            viewer->send_count += 1;
+            viewer->send_buffer[viewer->send_count] = scancode;
+            viewer->send_count += 1;
+        }
+    }
+}
+
+static void msmouse_input_sync(DeviceState *dev)
+{
+}
+
+////////////////////////////////////////////////////////////////////////
+//----------------------  END OF GOOD STUFF  ---------------------------
+////////////////////////////////////////////////////////////////////////
 
 static int viewer_can_receive(ViewerState *s)
 {
@@ -876,6 +879,17 @@ static int viewer_be_change(void *opaque)
     return 0;
 }
 
+////////////////////////////////////////////////////////////////////////
+//----------------------  START OF GOOD STUFF  -------------------------
+////////////////////////////////////////////////////////////////////////
+
+static QemuInputHandler msmouse_handler = {
+    .name  = "RIVOS Viewer Keyboard/Mouse",
+    .mask  = INPUT_EVENT_MASK_BTN | INPUT_EVENT_MASK_REL | INPUT_EVENT_MASK_KEY,
+    .event = msmouse_input_event,
+    .sync  = msmouse_input_sync,
+};
+
 static const GraphicHwOps wrapper_ops = {
     .gfx_update = viewer_display_update,
 };
@@ -889,6 +903,10 @@ static void viewer_realize(DeviceState *dev, Error **errp)
     s->recieve_count = 0;
     s->fb = g_malloc(WIDTH*HEIGHT*4*4);
 
+    s->mouse_x = 0; s->mouse_y = 0;
+
+    s->input_handler = qemu_input_handler_register((DeviceState*)s, &msmouse_handler);
+
     s->modem_status_poll = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) viewer_update_msl, s);
 
     s->fifo_timeout_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) fifo_timeout_int, s);
@@ -900,6 +918,10 @@ static void viewer_realize(DeviceState *dev, Error **errp)
     fifo8_create(&s->xmit_fifo, UART_FIFO_LENGTH);
     viewer_reset(s);
 }
+
+////////////////////////////////////////////////////////////////////////
+//----------------------  END OF GOOD STUFF  ---------------------------
+////////////////////////////////////////////////////////////////////////
 
 static void viewer_unrealize(DeviceState *dev)
 {

@@ -33,6 +33,7 @@
 #include "hw/sysbus.h"
 #include "qom/object.h"
 #include "ui/console.h"
+#include "ui/input.h"
 
 #define UART_FIFO_LENGTH    16      /* 16550A Fifo Length */
 
@@ -51,6 +52,11 @@ struct ViewerState {
 
     uint8_t send_buffer[4096];
     uint64_t send_count;
+
+    uint32_t mouse_x;
+    uint32_t mouse_y;
+
+    QemuInputHandlerState* input_handler;
 
     uint16_t divider;
     uint8_t rbr; /* receive register */
