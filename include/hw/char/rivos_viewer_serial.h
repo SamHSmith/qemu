@@ -50,6 +50,9 @@ struct ViewerState {
     uint64_t recieve_data[2];
     uint64_t recieve_count;
 
+    uint64_t recieve_data2[2];
+    uint64_t recieve_count2;
+
     uint8_t send_buffer[4096];
     uint64_t send_count;
 

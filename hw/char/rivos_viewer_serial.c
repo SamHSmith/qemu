@@ -338,7 +338,7 @@ static void viewer_update_tiocm(ViewerState *s)
 
 typedef struct
 {
-    uint64_t destination;
+    uint64_t device;
     uint64_t size;
     uint8_t data[];
 } OakPacket;
@@ -348,7 +348,7 @@ typedef struct
     OakPacket base;
     uint64_t frame_ptr;
     uint64_t frame_size;
-} OakPacketVideo;
+} OakPacketVideoOut;
 
 static void viewer_proccess_packet(ViewerState* viewer, uint64_t data_ptr, uint64_t data_count)
 {
@@ -361,9 +361,9 @@ static void viewer_proccess_packet(ViewerState* viewer, uint64_t data_ptr, uint6
     if(base_packet->size != data_count)
     { printf("OAKPACKET size != data_count\n"); return; }
 
-    if(base_packet->destination == 0)
+    if(base_packet->device == 9)
     {
-        OakPacketVideo* packet = (OakPacketVideo*)base_packet;
+        OakPacketVideoOut* packet = (OakPacketVideoOut*)base_packet;
 
         float* buf = viewer->fb;
  
@@ -381,12 +381,31 @@ static void viewer_proccess_packet(ViewerState* viewer, uint64_t data_ptr, uint6
     }
 }
 
+static void viewer_send_packet(ViewerState* viewer, uint64_t data_ptr, uint64_t data_count)
+{
+    if(data_count != 256)
+    { printf("OAKPACKET read has incompatible data_size\n"); return; }
+
+    OakPacket* packet = (OakPacket*)viewer->send_buffer;
+    if(viewer->send_count < sizeof(OakPacket) || packet->size > 256) { viewer->send_count = 0; return; }
+
+    dma_memory_write(&address_space_memory, data_ptr, packet, packet->size);
+
+    uint64_t lower = 0;
+    for(uint64_t i = packet->size; i < viewer->send_count; i++)
+    {
+        viewer->send_buffer[lower] = viewer->send_buffer[i];
+        lower++;
+    }
+    viewer->send_count = lower;
+}
+
 static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
     ViewerState* viewer = opaque;
-//    printf("super fancy uart write\n");
-
+if(addr == 0)
+{
     *(((uint8_t*)viewer->recieve_data) + viewer->recieve_count) = (uint8_t)val;
     viewer->recieve_count += 1;
 
@@ -399,6 +418,21 @@ static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
         viewer_proccess_packet(viewer, data_ptr, data_count);
     }
 }
+else if(addr == 1)
+{
+    *(((uint8_t*)viewer->recieve_data2) + viewer->recieve_count2) = (uint8_t)val;
+    viewer->recieve_count2 += 1;
+
+    if(viewer->recieve_count2 >= 8*2)
+    {
+        uint64_t data_count = viewer->recieve_data2[0];
+        uint64_t data_ptr = viewer->recieve_data2[1];
+        viewer->recieve_count2 = 0;
+
+        viewer_send_packet(viewer, data_ptr, data_count);
+    }
+}
+}
 
 static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -406,11 +440,16 @@ static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
 
     if(addr == 1)
     {
-        return viewer->send_count > 0;
+        if(viewer->send_count > 0)
+        {
+            return 1;
+//            OakPacket* packet = (OakPacket*)viewer->send_buffer;
+//            return packet->device;
+        } else { return 0; }
     }
     else if(addr == 0)
     {
-        uint8_t ret = 0;
+/*        uint8_t ret = 0;
         if(viewer->send_count > 0) { viewer->send_count -= 1; }
         for(int64_t i = viewer->send_count; i >= 0; i--)
         {
@@ -419,12 +458,20 @@ static uint64_t viewer_ioport_read(void *opaque, hwaddr addr, unsigned size)
             ret = temp;
         }
         return ret;
+*/
     }
     return 0;
 }
 static uint8_t first_run = 1;
 #define WIDTH (1280/2)
 #define HEIGHT (1024/2)
+
+typedef struct
+{
+    OakPacket base;
+    uint32_t width;
+    uint32_t height;
+} OakPacketVideoOutRequest;
 
 static void viewer_display_update(void* dev)
 {
@@ -453,33 +500,42 @@ static void viewer_display_update(void* dev)
 
         viewer->framebuffer_index = 0;
 
-        if(viewer->send_count + 1 + 4*2 + 1 + 4*2 < 4096)
+        if(viewer->send_count + sizeof(OakPacketVideoOutRequest) < 4096)
         {
-            viewer->send_buffer[viewer->send_count] = 1;
-            viewer->send_count += 1;
-            uint32_t* b = (uint32_t*)(viewer->send_buffer + viewer->send_count);
-            viewer->send_count += 4*2;
-            *b = (uint32_t)width;
-            b++;
-            *b = (uint32_t)height;
+            OakPacketVideoOutRequest* packet =
+                (OakPacketVideoOutRequest*)(viewer->send_buffer + viewer->send_count);
+            viewer->send_count += sizeof(*packet);
+ 
+            packet->base.device = 9;
+            packet->base.size = sizeof(*packet);
 
-            viewer->send_buffer[viewer->send_count] = 2;
+            packet->width = width;
+            packet->height = height;
+
+/*            viewer->send_buffer[viewer->send_count] = 2;
             viewer->send_count += 1;
             *((int32_t*)(viewer->send_buffer + viewer->send_count)) = viewer->mouse_x;
             viewer->send_count += 4;
             *((int32_t*)(viewer->send_buffer + viewer->send_count)) = viewer->mouse_y;
             viewer->send_count += 4;
-            viewer->mouse_x = 0; viewer->mouse_y = 0;
+            viewer->mouse_x = 0; viewer->mouse_y = 0; */
         }
     }
 }
+
+typedef struct
+{
+    OakPacket base;
+    uint8_t scancode;
+    uint8_t was_pressed;
+} OakPacketKeyboard;
 
 static void msmouse_input_event(DeviceState *dev, QemuConsole *src,
                                 InputEvent *evt)
 {
     ViewerState* viewer = VIEWER(dev);
     InputMoveEvent* move;
-    InputBtnEvent* btn;
+//    InputBtnEvent* btn;
     InputKeyEvent* key;
 
     if(evt->type == INPUT_EVENT_KIND_REL)
@@ -497,8 +553,8 @@ static void msmouse_input_event(DeviceState *dev, QemuConsole *src,
     }
     else if(evt->type == INPUT_EVENT_KIND_BTN)
     {
-        btn = evt->u.btn.data;
-        uint8_t button = btn->button;
+//        btn = evt->u.btn.data;
+/*        uint8_t button = btn->button;
         uint8_t down = btn->down;
         if(viewer->send_count + 1 + 8 + 1 + 1 < 4096)
         {
@@ -514,7 +570,7 @@ static void msmouse_input_event(DeviceState *dev, QemuConsole *src,
             viewer->send_count += 1;
             viewer->send_buffer[viewer->send_count] = button;
             viewer->send_count += 1;
-        }
+        } */
     }
     else if(evt->type == INPUT_EVENT_KIND_KEY)
     {
@@ -522,12 +578,15 @@ static void msmouse_input_event(DeviceState *dev, QemuConsole *src,
         int qcode = qemu_input_key_value_to_qcode(key->key);
         uint8_t scancode = qcode;
         uint8_t down = key->down;
-        if(viewer->send_count + 1 + 1 < 4096)
+        if(viewer->send_count + sizeof(OakPacketKeyboard) < 4096)
         {
-            viewer->send_buffer[viewer->send_count] = 5 + (down != 0);
-            viewer->send_count += 1;
-            viewer->send_buffer[viewer->send_count] = scancode;
-            viewer->send_count += 1;
+            OakPacketKeyboard* packet = (OakPacketKeyboard*)(viewer->send_buffer + viewer->send_count);
+            viewer->send_count += sizeof(OakPacketKeyboard);
+
+            packet->base.device = 10;
+            packet->base.size = sizeof(OakPacketKeyboard);
+            packet->scancode = scancode;
+            packet->was_pressed = down != 0;
         }
     }
 }
@@ -929,6 +988,7 @@ static void viewer_realize(DeviceState *dev, Error **errp)
     s->con = graphic_console_init(dev, 0, &wrapper_ops, dev);
     s->send_count = 0;
     s->recieve_count = 0;
+    s->recieve_count2 = 0;
     s->fb = g_malloc(WIDTH*HEIGHT*4*4);
 
     s->mouse_x = 0; s->mouse_y = 0;
