@@ -336,6 +336,51 @@ static void viewer_update_tiocm(ViewerState *s)
 //----------------------  START OF GOOD STUFF  -------------------------
 ////////////////////////////////////////////////////////////////////////
 
+typedef struct
+{
+    uint64_t destination;
+    uint64_t size;
+    uint8_t data[];
+} OakPacket;
+
+typedef struct
+{
+    OakPacket base;
+    uint64_t frame_ptr;
+    uint64_t frame_size;
+} OakPacketVideo;
+
+static void viewer_proccess_packet(ViewerState* viewer, uint64_t data_ptr, uint64_t data_count)
+{
+    if(data_count > 256)
+    { printf("OAKPACKET data_count to big\n"); return; }
+
+    uint8_t scratch[256];
+    OakPacket* base_packet = (OakPacket*)scratch;
+    dma_memory_read(&address_space_memory, data_ptr, scratch, data_count);
+    if(base_packet->size != data_count)
+    { printf("OAKPACKET size != data_count\n"); return; }
+
+    if(base_packet->destination == 0)
+    {
+        OakPacketVideo* packet = (OakPacketVideo*)base_packet;
+
+        float* buf = viewer->fb;
+ 
+        dma_memory_read(&address_space_memory, packet->frame_ptr,
+                        buf,
+                        packet->frame_size);
+        for(uint64_t i = 0; i < viewer->framebuffer_size/4; i++)
+        {
+            *(viewer->framebuffer + i*4 + 0) = (uint8_t)(buf[i*4 + 0] * 255.0);
+            *(viewer->framebuffer + i*4 + 1) = (uint8_t)(buf[i*4 + 1] * 255.0);
+            *(viewer->framebuffer + i*4 + 2) = (uint8_t)(buf[i*4 + 2] * 255.0);
+            *(viewer->framebuffer + i*4 + 3) = (uint8_t)255;
+        }
+        viewer->framebuffer_index = viewer->framebuffer_size;
+    }
+}
+
 static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
                                 unsigned size)
 {
@@ -351,19 +396,7 @@ static void viewer_ioport_write(void *opaque, hwaddr addr, uint64_t val,
         uint64_t data_ptr = viewer->recieve_data[1];
         viewer->recieve_count = 0;
 
-        float* buf = viewer->fb;
-
-        dma_memory_read(&address_space_memory, data_ptr,
-                        buf,
-                        data_count);
-        for(uint64_t i = 0; i < viewer->framebuffer_size/4; i++)
-        {
-            *(viewer->framebuffer + i*4 + 0) = (uint8_t)(buf[i*4 + 0] * 255.0);
-            *(viewer->framebuffer + i*4 + 1) = (uint8_t)(buf[i*4 + 1] * 255.0);
-            *(viewer->framebuffer + i*4 + 2) = (uint8_t)(buf[i*4 + 2] * 255.0);
-            *(viewer->framebuffer + i*4 + 3) = (uint8_t)255;
-        }
-        viewer->framebuffer_index = viewer->framebuffer_size;
+        viewer_proccess_packet(viewer, data_ptr, data_count);
     }
 }
 
