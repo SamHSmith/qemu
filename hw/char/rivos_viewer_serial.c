@@ -473,6 +473,13 @@ typedef struct
     uint32_t height;
 } OakPacketVideoOutRequest;
 
+typedef struct
+{
+    OakPacket base;
+    int32_t delta_x;
+    int32_t delta_y;
+} OakPacketMouse;
+
 static void viewer_display_update(void* dev)
 {
     int width = WIDTH;
@@ -500,7 +507,7 @@ static void viewer_display_update(void* dev)
 
         viewer->framebuffer_index = 0;
 
-        if(viewer->send_count + sizeof(OakPacketVideoOutRequest) < 4096)
+        if(viewer->send_count + sizeof(OakPacketVideoOutRequest) + sizeof(OakPacketMouse) < 4096)
         {
             OakPacketVideoOutRequest* packet =
                 (OakPacketVideoOutRequest*)(viewer->send_buffer + viewer->send_count);
@@ -512,13 +519,17 @@ static void viewer_display_update(void* dev)
             packet->width = width;
             packet->height = height;
 
-/*            viewer->send_buffer[viewer->send_count] = 2;
-            viewer->send_count += 1;
-            *((int32_t*)(viewer->send_buffer + viewer->send_count)) = viewer->mouse_x;
-            viewer->send_count += 4;
-            *((int32_t*)(viewer->send_buffer + viewer->send_count)) = viewer->mouse_y;
-            viewer->send_count += 4;
-            viewer->mouse_x = 0; viewer->mouse_y = 0; */
+            OakPacketMouse* packet_mouse =
+                (OakPacketMouse*)(viewer->send_buffer + viewer->send_count);
+            viewer->send_count += sizeof(*packet);
+
+            packet_mouse->base.device = 11;
+            packet_mouse->base.size = sizeof(*packet);
+
+            packet_mouse->delta_x = viewer->mouse_x;
+            packet_mouse->delta_y = viewer->mouse_y;
+            viewer->mouse_x = 0;
+            viewer->mouse_y = 0;
         }
     }
 }
