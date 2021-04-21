@@ -53,13 +53,15 @@ struct ViewerState {
     uint64_t recieve_data2[2];
     uint64_t recieve_count2;
 
-    uint8_t send_buffer[4096];
+    uint8_t send_buffer[4096*2];
     uint64_t send_count;
 
     uint32_t mouse_x;
     uint32_t mouse_y;
 
     QemuInputHandlerState* input_handler;
+
+    FILE* drive1_file;
 
     uint16_t divider;
     uint8_t rbr; /* receive register */

@@ -350,6 +350,20 @@ typedef struct
     uint64_t frame_size;
 } OakPacketVideoOut;
 
+typedef struct
+{
+    OakPacket base;
+    uint64_t transaction_number;
+    uint8_t write;
+    uint64_t block_address_pairs[];
+} OakPacketBlockFetch;
+
+typedef struct
+{
+    OakPacket base;
+    uint64_t transaction_number;
+} OakPacketBlockFetchComplete;
+
 static void viewer_proccess_packet(ViewerState* viewer, uint64_t data_ptr, uint64_t data_count)
 {
     if(data_count > 256)
@@ -378,6 +392,51 @@ static void viewer_proccess_packet(ViewerState* viewer, uint64_t data_ptr, uint6
             *(viewer->framebuffer + i*4 + 3) = (uint8_t)255;
         }
         viewer->framebuffer_index = viewer->framebuffer_size;
+    }
+    else if(base_packet->device == 8) // drive1
+    {
+        OakPacketBlockFetch* packet = (OakPacketBlockFetch*)base_packet;
+        if(( (packet->base.size - sizeof(OakPacketBlockFetch)) % (2*sizeof(uint64_t)) ) == 0)
+        {
+            uint8_t* scratch2 = (uint8_t*)g_malloc(4096);
+            uint64_t count = (packet->base.size - sizeof(OakPacketBlockFetch)) / (2*sizeof(uint64_t));
+            if(packet->write)
+            {
+                for(uint64_t i = 0; i < count*2; i+=2)
+                {
+                    uint64_t block = packet->block_address_pairs[i];
+                    uint64_t address = packet->block_address_pairs[i+1];
+ 
+                    assert(fseek(viewer->drive1_file, block*4096, SEEK_SET) == 0);
+                    dma_memory_read(&address_space_memory, address, scratch2, 4096);
+                    assert(fwrite(scratch2, 4096, 1, viewer->drive1_file) == 1);
+                }
+            }
+            else
+            {
+                for(uint64_t i = 0; i < count*2; i+=2)
+                {
+                    uint64_t block = packet->block_address_pairs[i];
+                    uint64_t address = packet->block_address_pairs[i+1];
+
+                    assert(fseek(viewer->drive1_file, block*4096, SEEK_SET) == 0);
+                    assert(fread(scratch2, 4096, 1, viewer->drive1_file) == 1);
+                    dma_memory_write(&address_space_memory, address, scratch2, 4096);
+                }
+            }
+            g_free(scratch2);
+            if(viewer->send_count + sizeof(OakPacketBlockFetchComplete) < 4096*2)
+            {
+                OakPacketBlockFetchComplete* send_packet =
+                    (OakPacketBlockFetchComplete*)(viewer->send_buffer + viewer->send_count);
+                viewer->send_count += sizeof(*send_packet);
+ 
+                send_packet->base.device = 8;
+                send_packet->base.size = sizeof(*send_packet);
+
+                send_packet->transaction_number = packet->transaction_number;
+            }
+        }
     }
 }
 
@@ -1005,6 +1064,13 @@ static void viewer_realize(DeviceState *dev, Error **errp)
     s->mouse_x = 0; s->mouse_y = 0;
 
     s->input_handler = qemu_input_handler_register((DeviceState*)s, &msmouse_handler);
+
+    s->drive1_file = fopen("drive1.dsk", "r+");
+    if(s->drive1_file != 0)
+    {
+        fseek(s->drive1_file, 0, SEEK_END);
+        assert((ftell(s->drive1_file) % 4096) == 0);
+    }
 
     s->modem_status_poll = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) viewer_update_msl, s);
 
