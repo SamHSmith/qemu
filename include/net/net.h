@@ -5,8 +5,6 @@
 #include "qapi/qapi-types-net.h"
 #include "net/queue.h"
 #include "hw/qdev-properties-system.h"
-#include "qapi/clone-visitor.h"
-#include "qapi/qapi-visit-net.h"
 
 #define MAC_FMT "%02X:%02X:%02X:%02X:%02X:%02X"
 #define MAC_ARG(x) ((uint8_t *)(x))[0], ((uint8_t *)(x))[1], \
@@ -94,8 +92,7 @@ struct NetClientState {
     NetQueue *incoming_queue;
     char *model;
     char *name;
-    char *info_str;
-    NetdevInfo *stored_config;
+    char info_str[256];
     unsigned receive_disabled : 1;
     NetClientDestructor *destructor;
     unsigned int queue_index;
@@ -242,6 +239,11 @@ uint32_t net_crc32_le(const uint8_t *p, int len);
     .info       = &vmstate_info_buffer,                              \
     .flags      = VMS_BUFFER,                                        \
     .offset     = vmstate_offset_macaddr(_state, _field),            \
+}
+
+static inline bool net_peer_needs_padding(NetClientState *nc)
+{
+  return nc->peer && !nc->peer->do_not_pad;
 }
 
 #endif

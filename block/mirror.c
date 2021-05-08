@@ -689,6 +689,14 @@ static int mirror_exit_common(Job *job)
                 ret = -EPERM;
             }
         }
+    } else if (!abort && s->backing_mode == MIRROR_OPEN_BACKING_CHAIN) {
+        assert(!bdrv_backing_chain_next(target_bs));
+        ret = bdrv_open_backing_file(bdrv_skip_filters(target_bs), NULL,
+                                     "backing", &local_err);
+        if (ret < 0) {
+            error_report_err(local_err);
+            local_err = NULL;
+        }
     }
 
     if (s->to_replace) {
@@ -1107,25 +1115,11 @@ immediate_exit:
 static void mirror_complete(Job *job, Error **errp)
 {
     MirrorBlockJob *s = container_of(job, MirrorBlockJob, common.job);
-    BlockDriverState *target;
-
-    target = blk_bs(s->target);
 
     if (!s->synced) {
         error_setg(errp, "The active block job '%s' cannot be completed",
                    job->id);
         return;
-    }
-
-    if (s->backing_mode == MIRROR_OPEN_BACKING_CHAIN) {
-        int ret;
-
-        assert(!bdrv_backing_chain_next(target));
-        ret = bdrv_open_backing_file(bdrv_skip_filters(target), NULL,
-                                     "backing", errp);
-        if (ret < 0) {
-            return;
-        }
     }
 
     /* block all operations on to_replace bs */
@@ -1154,7 +1148,11 @@ static void mirror_complete(Job *job, Error **errp)
     }
 
     s->should_complete = true;
-    job_enter(job);
+
+    /* If the job is paused, it will be re-entered when it is resumed */
+    if (!job->paused) {
+        job_enter(job);
+    }
 }
 
 static void coroutine_fn mirror_pause(Job *job)
@@ -1632,9 +1630,6 @@ static BlockJob *mirror_start_job(
 
     bs_opaque->is_commit = target_is_backing;
 
-    /* bdrv_append takes ownership of the mirror_top_bs reference, need to keep
-     * it alive until block_job_create() succeeds even if bs has no parent. */
-    bdrv_ref(mirror_top_bs);
     bdrv_drained_begin(bs);
     ret = bdrv_append(mirror_top_bs, bs, errp);
     bdrv_drained_end(bs);
